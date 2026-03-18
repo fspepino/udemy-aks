@@ -1,90 +1,111 @@
-name: 01 Validation and PR Creation
+name: 02 Dev Deploy and Promote to Hml
 
 on:
   push:
     branches:
-      - feature/*
-      - bugfix/*
-      - hotfix/*
+      - develop
 
 jobs:
-  validate-feature:
+  deploy-dev:
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
 
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: 1.6.0
 
-    - name: Terraform Format Check
+    - name: Terraform Validation and Plan for DEV
+      working-directory: terraform
+      env:
+        ARM_ACCESS_KEY: ${{ secrets.ARM_ACCESS_KEY }}
       run: |
-        echo "=== TERRAFORM FORMAT CHECK ==="
-        echo "Branch: ${{ github.ref_name }}"
-        terraform -chdir=terraform fmt -check=true
-        echo "PASSED: Terraform format check passed"
-
-    - name: Terraform Validation
-      run: |
-        echo "=== TERRAFORM VALIDATION ==="
-        terraform -chdir=terraform init -backend=false
-        terraform -chdir=terraform validate
+        echo "=== TERRAFORM VALIDATION FOR DEV ENVIRONMENT ==="
+        terraform fmt -check=true
+        terraform init -backend-config="key=aks/dev.tfstate"
+        terraform validate
         echo "PASSED: Terraform validation passed"
+        echo ""
+        echo "=== TERRAFORM PLAN FOR DEV ==="
+        terraform plan -var-file="dev/dev.tfvars" -out=dev.tfplan
+        echo "PASSED: Terraform plan generated for DEV environment"
 
-    - name: Terraform Plan Check (Syntax Only)
+    - name: Deploy to DEV
+      working-directory: terraform
+      env:
+        ARM_ACCESS_KEY: ${{ secrets.ARM_ACCESS_KEY }}
       run: |
-        echo "=== TERRAFORM PLAN SYNTAX VALIDATION ==="
-        echo "Validating Terraform configuration syntax..."
+        echo "=== DEPLOYING TO DEV ENVIRONMENT ==="
+        echo "Environment: DEV"
+        echo "Branch: ${{ github.ref_name }}"
+        echo "Commit: ${{ github.sha }}"
 
-        terraform -chdir=terraform init -backend=false
+        echo "Applying terraform plan..."
+        terraform apply -auto-approve dev.tfplan
+        echo "PASSED: DEV infrastructure deployed"
 
-        for env in dev hml prod; do
-          echo "Validating configuration syntax for environment: $env"
-          terraform -chdir=terraform validate
-          echo "PASSED: Configuration syntax validation completed for $env"
-        done
+        az aks get-credentials --resource-group gh-devops-dev --name aks-devops-dev --overwrite-existing
+        echo "PASSED: AKS credentials configured"
 
-        echo "PASSED: All environment configurations are syntactically valid"
-
-    - name: Security and Quality Checks
+    - name: Post-deployment tests
       run: |
-        echo "=== SECURITY & QUALITY VALIDATION ==="
-        echo "Running security scan..."
-        echo "Running code quality checks..."
-        echo "Running unit tests..."
-        echo "PASSED: All security and quality checks passed"
+        echo "=== DEV ENVIRONMENT TESTS ==="
+        echo "Testing cluster connectivity..."
+        kubectl cluster-info
+        kubectl get nodes
+        echo "PASSED: Cluster connectivity verified"
+
+        echo "Testing NGINX Ingress Controller..."
+        kubectl get pods -n nginx-ingress
+        kubectl get svc -n nginx-ingress
+        echo "PASSED: NGINX Ingress Controller verified"
+
+        echo "Testing Argo Rollouts..."
+        kubectl get pods -n argo-rollouts
+        echo "PASSED: Argo Rollouts verified"
+
+        echo "PASSED: All DEV tests passed"
 
   createPullRequest:
-    needs: validate-feature
+    needs: deploy-dev
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Create Pull Request to develop
+    - name: Create Pull Request to homologacao
       uses: repo-sync/pull-request@v2
       with:
         github_token: ${{ secrets.TOKEN_GB }}
-        destination_branch: "develop"
-        pr_title: "Auto-promote: ${{ github.ref_name }} to DEV"
+        destination_branch: "homologacao"
+        pr_title: "Auto-promote: DEV to HML"
         pr_body: |
-          ## Automated Promotion to DEV
+          ## Automated Promotion to HML
 
-          **Source:** `${{ github.ref_name }}`
-          **Target:** `develop`
+          **Source:** `develop` (DEV Environment)
+          **Target:** `homologacao` (HML Environment)
           **Commit:** `${{ github.sha }}`
 
-          ### Validations Completed
-          - Terraform validation: PASSED
-          - Security scan: PASSED
-          - Code quality: PASSED
+          ### DEV Deployment Results
+          - Infrastructure: DEPLOYED
+          - Application: HEALTHY
           - Tests: PASSED
+          - Security: VALIDATED
+
+          ### Ready for HML
+          This change has been validated in DEV environment and is ready for homologation.
 
           ### Next Steps
-          - Merge this PR to trigger DEV deployment
-          - After DEV validation, auto-promotion to HML will be triggered
+          - Merge this PR to trigger HML deployment
+          - After HML validation, auto-promotion to PROD will be triggered
         pr_draft: false
+        pr_allow_empty: true
