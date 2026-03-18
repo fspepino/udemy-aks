@@ -1,4 +1,4 @@
-name: Destroy Environment
+name: Destroy Environment with confirmation
 
 on:
   workflow_dispatch:
